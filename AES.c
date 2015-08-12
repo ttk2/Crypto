@@ -456,7 +456,17 @@ void decrypt(uint32_t data[], uint32_t key[], int keysize, bool debug)
 {
 	uint32_t key_schedule[key_schedule_size(keysize)];
     rijndael_key_schedule(key_schedule, key, keysize);
-    int schedule_loc = 40;
+    
+    int schedule_loc;
+    
+    if (keysize == 128)
+    	schedule_loc = 40;
+
+    else if (keysize == 192)
+    	schedule_loc = 48;
+
+    else
+    	schedule_loc = 56; 
     
     rotate_data(data);
 
@@ -667,12 +677,12 @@ int main()
 {
 
 	uint32_t data[4] = {0x00112233, 0x44556677, 0x8899aabb, 0xccddeeff};
-    uint32_t key[6] = {0x00010203, 0x04050607, 0x08090a0b, 0x0c0d0e0f, 0x10111213, 0x14151617};
+    uint32_t key[8] = {0x00010203, 0x04050607, 0x08090a0b, 0x0c0d0e0f, 0x10111213, 0x14151617, 0x18191a1b, 0x1c1d1e1f};
     
     //uint32_t data[4] = {0x3243f6a8, 0x885a308d, 0x313198a2, 0xe0370734};
     //uint32_t key[4] = {0x2b7e1516, 0x28aed2a6, 0xabf71588, 0x09cf4f3c
     
-    encrypt(data, key, 192, true);
+    encrypt(data, key, 256, false);
     
     printf("The ciphertext is\n");
     for(int x = 0; x < 4; x++)
@@ -680,7 +690,7 @@ int main()
     	printf("%08x\n",data[x]);
     } 
 
-    decrypt(data, key, 192, true);
+    decrypt(data, key, 256, false);
 
     printf("The plaintext is\n");
     for(int x = 0; x < 4; x++)
