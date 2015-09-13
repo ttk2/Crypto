@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdlib.h>
+
+#define DEBUG
 
 /*Credit https://en.wikipedia.org/wiki/Rijndael_key_schedule*/
 uint8_t rcon[256] = 
@@ -207,57 +210,69 @@ uint32_t set_byte(uint32_t word, uint8_t byte, int loc)
 }
 
 
-//Takes input word and applies the x box to each byte
-uint32_t apply_s_box (uint32_t word)
+//applies the s box to one 32 bit word starting at the given position
+void apply_s_box (uint8_t byte[], int start)
 {
-	uint8_t byte1, byte2, byte3, byte4;
-	uint32_t mask = 0xFF;
-   	byte4 = word & mask;
-   	mask <<= 8;
-   	byte3 = (word & mask) >> 8;
-   	mask <<= 8;
-  	byte2 = (word & mask) >> 16;
-  	mask <<= 8;
-    byte1 = (word & mask) >> 24;
-
-    //Transform bytes using the sbox 
-    byte1 = s[byte1];
-    byte2 = s[byte2];
-    byte3 = s[byte3];
-    byte4 = s[byte4];
-    
-    
-    //Reassemble
-    return (byte1 << 24) | (byte2 << 16) | (byte3 << 8) | byte4;
+	for(int x = 0 ; x< 4 ; x++)
+	{
+		byte[start + x] = s[byte[start + x]];
+	}
 }
 
-uint32_t apply_inv_s_box (uint32_t word)
+uint32_t key_schedule_apply_s_box (uint8_t byte[], int start)
 {
-	uint8_t byte1, byte2, byte3, byte4;
-	uint32_t mask = 0xFF;
-   	byte4 = word & mask;
-   	mask <<= 8;
-   	byte3 = (word & mask) >> 8;
-   	mask <<= 8;
-  	byte2 = (word & mask) >> 16;
-  	mask <<= 8;
-    byte1 = (word & mask) >> 24;
-   
-    //Transform bytes using the sbox 
-    byte1 = inv_s[byte1];
-    byte2 = inv_s[byte2];
-    byte3 = inv_s[byte3];
-    byte4 = inv_s[byte4];
-    
-    //Reassemble
-    return (byte1 << 24) | (byte2 << 16) | (byte3 << 8) | byte4;
+	int word[4];
+	for(int x = 0 ; x< 4 ; x++)
+	{
+		word[x] = s[byte[start + x]];
+	}
+	
+	return *(uint32_t*)&word[0];
+}
+
+void apply_inv_s_box (uint8_t byte[], int start)
+{
+	for(int x = 0 ; x< 4 ; x++)
+	{
+		byte[start + x] = inv_s[byte[start + x]];
+	}
+} 
+
+//Rotates data to be encrypted in the same manner as the round keys
+//TODO generalize this for blocksizes other than 128bits
+void rotate_matrix (uint8_t data[], int start)
+{
+	uint8_t tmp;
+	tmp = data[start + 1];
+	data[start + 1] = data[start + 4];
+	data[start + 4] = tmp;
+	
+	tmp = data[start + 2];
+	data[start + 2] = data[start + 8];
+	data[start + 8] = tmp;
+	
+	tmp = data[start + 3];
+	data[start + 3] = data[start + 12];
+	data[start + 12] = tmp;
+
+	tmp = data[start + 6];
+	data[start + 6] = data[start + 9];
+	data[start + 9] = tmp;
+	
+	tmp = data[start + 7];
+	data[start + 7] = data[start + 13];
+	data[start + 13] = tmp;
+	
+	tmp = data[start + 11];
+	data[start + 11] = data[start + 14];
+	data[start + 14] = tmp;
 }
 
 uint32_t rijndael_key_schedule_core (uint32_t word, int iteration)
 {
 	word = rotate(word, 8);
 
-    word = apply_s_box(word);
+    apply_s_box((uint8_t*)&word, 0);
     
     //Xor most significant byte with rcon
     word = word ^ (rcon[iteration] << 24);
@@ -265,7 +280,9 @@ uint32_t rijndael_key_schedule_core (uint32_t word, int iteration)
     return word;
 }
 
-int key_schedule_size (int key_size)
+
+//Since the key schedule operates on full works we do some fancy casting to turn our bytes into full 32 bit ints. 
+uint8_t* rijndael_key_schedule (uint8_t *encryption_key, int key_size) 
 {
 	int b; //bytes in the completed key schedule 
 	if (key_size == 128)
@@ -274,188 +291,124 @@ int key_schedule_size (int key_size)
 		b = 208;
 	else 
 		b = 240; 
-
- 	return (b*8)/32;
-}
-
-void rijndael_key_schedule (uint32_t key_schedule[], uint32_t encryption_key[], int key_size) 
-{
-	int b; //bytes in the completed key schedule 
-	if (key_size == 128)
-		b = 176; 
-	else if (key_size == 192)
-		b = 208;
-	else 
-		b = 240; 
+		
+	uint8_t *key_schedule = malloc(b);
+	
+	//Can't get memory. 
+	if(key_schedule == NULL)
+		exit(1);
+	
 
 	int iteration = 1;
     
     int counter = 0;
 	
-	for (int x = 0 ; x < ((b*8)/32); x++)
+
+	for (int x = 0 ; x < ((b * 8) / 32); x++)
 	{
 		//copy the first n bytes of the key schedule directly from the encryption key
 		if(x < (key_size/32))
-			key_schedule[x] = encryption_key[x];
-
+			*(uint32_t*)&key_schedule[x * 4] = *(uint32_t*)&encryption_key[x * 4];
+			
 		else if ((x % 4 == 0 && key_size == 128) || (x % 6 == 0 && key_size == 192) || (x % 8 == 0 && key_size == 256))
 		{
-			key_schedule[x] = key_schedule [x - (key_size / 32)] ^ rijndael_key_schedule_core(key_schedule[x - 1],iteration);
+			*(uint32_t*)&key_schedule[x * 4] = *(uint32_t*)&key_schedule[((x - (key_size / 32)) * 4)] ^ rijndael_key_schedule_core(*(uint32_t*)&key_schedule[x * 4], iteration);
 			iteration++;
 			counter = 0;
+
 		}
 
 		else if (counter < 3 || (counter < 5 && key_size == 192))
 		{
-			key_schedule[x] = key_schedule [x - (key_size / 32)] ^ key_schedule[x - 1];
+			*(uint32_t*)&key_schedule[x * 4] = *(uint32_t*)&key_schedule[((x - (key_size / 32)) * 4)] ^ *(uint32_t*)&key_schedule[(x - 1) * 4];
 			counter++;
 		}
-
+	
 	    //Step for 256 bit keysizes only
 		else if (key_size == 256)
 		{
-    		key_schedule[x] = key_schedule [x - (key_size / 32)] ^ apply_s_box(key_schedule[x - 1]);
+    		*(uint32_t*)&key_schedule[x * 4] = *(uint32_t*)&key_schedule[((x - (key_size / 32)) * 4)] ^ key_schedule_apply_s_box(key_schedule, (x - 1) * 4);
     		counter = 0;
 		}
 	}
-
-}
-
-//Takes an input array with 128 bits of data, replaces each byte with its S box mapping
-void sub_bytes (uint32_t data[])
-{
- for(int x = 0 ; x < 4; x++)
- 	data[x] = apply_s_box(data[x]);
-}
-
-void inv_sub_bytes (uint32_t data[])
-{
- for(int x = 0 ; x < 4; x++)
- 	data[x] = apply_inv_s_box(data[x]);
-}
-
-
-//Takes an input array with 128 bits of data, shifts each row by increasing amounts
-void shift_rows (uint32_t data[])
-{
-	data[1] = rotate(data[1], 8);
-	data[2] = rotate(data[2], 16);
-	data[3] = rotate(data[3], 24);
-}
-
-//Takes an input array with 128 bits of data, shifts each row by increasing amounts
-void inv_shift_rows (uint32_t data[])
-{
-	data[1] = rotate(data[1], 24);
-	data[2] = rotate(data[2], 16);
-	data[3] = rotate(data[3], 8);
-}
-
-void mix_columns(uint32_t data[])
-{
-	//Copy off the contents of the data array so that we can write out changes to the data array
-	uint32_t tmp1 = data[0], tmp2 = data[1], tmp3 = data[2], tmp4 = data[3];
-	//Setup temporary variables for each byte we produce 
-	uint8_t out1, out2, out3, out4;
-   
-   for(int x = 0 ; x < 4; x++)
-   {
-    	out1 = mul2[get_byte(tmp1, x)] ^ mul3[get_byte(tmp2, x)] ^ get_byte(tmp3, x) ^ get_byte(tmp4, x);
-    	out2 = get_byte(tmp1, x) ^ mul2[get_byte(tmp2, x)] ^ mul3[get_byte(tmp3, x)] ^ get_byte(tmp4, x);
-    	out3 = get_byte(tmp1, x) ^ get_byte(tmp2, x) ^ mul2[get_byte(tmp3, x)] ^ mul3[get_byte(tmp4, x)];
-    	out4 = mul3[get_byte(tmp1, x)] ^ get_byte(tmp2, x) ^ get_byte(tmp3, x) ^ mul2[get_byte(tmp4, x)];
-
-    	data[0] = set_byte(data[0], out1, x);
-    	data[1] = set_byte(data[1], out2, x);
-    	data[2] = set_byte(data[2], out3, x);
-    	data[3] = set_byte(data[3], out4, x);
-	}
-}
-
-void inv_mix_columns(uint32_t data[])
-{
-	//Copy off the contents of the data array so that we can write out changes to the data array
-	uint32_t tmp1 = data[0], tmp2 = data[1], tmp3 = data[2], tmp4 = data[3];
-	//Setup temporary variables for each byte we produce 
-	uint8_t out1, out2, out3, out4;
-   
-   for(int x = 0 ; x < 4; x++)
-   {
-    	out1 = mul14[get_byte(tmp1, x)] ^ mul11[get_byte(tmp2, x)] ^ mul13[get_byte(tmp3, x)] ^ mul9[get_byte(tmp4, x)];
-    	out2 = mul9[get_byte(tmp1, x)] ^ mul14[get_byte(tmp2, x)] ^ mul11[get_byte(tmp3, x)] ^ mul13[get_byte(tmp4, x)];
-    	out3 = mul13[get_byte(tmp1, x)] ^ mul9[get_byte(tmp2, x)] ^ mul14[get_byte(tmp3, x)] ^ mul11[get_byte(tmp4, x)];
-    	out4 = mul11[get_byte(tmp1, x)] ^ mul13[get_byte(tmp2, x)] ^ mul9[get_byte(tmp3, x)] ^ mul14[get_byte(tmp4, x)];
-
-    	data[0] = set_byte(data[0], out1, x);
-    	data[1] = set_byte(data[1], out2, x);
-    	data[2] = set_byte(data[2], out3, x);
-    	data[3] = set_byte(data[3], out4, x);
-	}
-}
-
-
-//While the round keys are generated a single long array of bytes, their representation for 
-//add_round_key needs to be rotated by 90 degrees, this function takes the key schedule and
-//generates a single rotated key block that represents a given round key
-void rotate_key (uint32_t key_block[], uint32_t key_schedule[], int start)
-{
-	for(int x = 0; x < 4; x++)
-	{
-		key_block[x] = set_byte(key_block[x], get_byte(key_schedule[start + 0], x), 0);
-		key_block[x] = set_byte(key_block[x], get_byte(key_schedule[start + 1], x), 1);
-		key_block[x] = set_byte(key_block[x], get_byte(key_schedule[start + 2], x), 2);
-		key_block[x] = set_byte(key_block[x], get_byte(key_schedule[start + 3], x), 3);
-		//printf("%08x\n", key_block[x]);
-	}
-}
-
-
-//Rotates data to be encrypted in the same manner as the round keys
-void rotate_data (uint32_t data[])
-{
-	uint32_t tmp[4];
 	
-	for (int x = 0; x < 4; x++)
-	{
-		tmp[x] = data[x];
-	}
+	
+	//rotate completed key schedule for later use
+	//for (int x = 0 ; x < ((b * 8) / 128); x++)
+	//{
+		//rotate_matrix(key_schedule, x);
+	//}
+	
+	printf("exiting key schedule\n");
+	return key_schedule;
+}
 
-	for (int x = 0; x < 4; x++)
-	{
-		data[x] = set_byte(data[x], get_byte(tmp[0], x), 0);
-		data[x] = set_byte(data[x], get_byte(tmp[1], x), 1);
-		data[x] = set_byte(data[x], get_byte(tmp[2], x), 2);
-		data[x] = set_byte(data[x], get_byte(tmp[3], x), 3);
+//Takes an input array with 128 bits of data, shifts each row by increasing amounts
+void shift_rows (uint8_t data[])
+{
+	*(uint32_t*)&data[(4)] = rotate(*(uint32_t*)&data[(4)], 8);
+	*(uint32_t*)&data[(8)] = rotate(*(uint32_t*)&data[(8)], 16);
+	*(uint32_t*)&data[(12)] = rotate(*(uint32_t*)&data[(4)], 24);
+}
+
+//Takes an input array with 128 bits of data, shifts each row by increasing amounts
+void inv_shift_rows (uint8_t data[])
+{
+	*(uint32_t*)&data[(4)] = rotate(*(uint32_t*)&data[(4)], 24);
+	*(uint32_t*)&data[(8)] = rotate(*(uint32_t*)&data[(8)], 16);
+	*(uint32_t*)&data[(12)] = rotate(*(uint32_t*)&data[(12)], 8);
+}
+
+void mix_columns(uint8_t data[])
+{  
+    uint8_t tmp[4];
+    for(int x = 0 ; x < 16; x+=4)
+    {
+    	tmp[0] = mul2[data[x]] ^ mul3[data[x + 1]] ^ data[x + 2] ^ data[x + 3];
+    	tmp[1] = data[x] ^ mul2[data[x + 1]] ^ mul3[data[x + 2]] ^ data[x + 3];
+    	tmp[2] = data[x] ^ data[x + 1] ^ mul2[data[x + 2]] ^ mul3[data[x + 3]];
+    	tmp[3] = mul3[data[x]] ^ data[x + 1] ^ data[x + 2] ^ mul2[data[x + 3]];
+    	
+    	for(int y = 0; y < 4; y++)
+    	{
+    		data[x + y] = tmp[y];
+    	}
+	}
+}
+
+void inv_mix_columns(uint8_t data[])
+{  
+    uint8_t tmp[4];
+    for(int x = 0 ; x < 16; x+=4)
+    {
+    	tmp[0] = mul14[data[x]] ^ mul11[data[x + 1]] ^ mul13[data[x + 2]] ^ mul9[data[x + 3]];
+    	tmp[1] = mul9[data[x]] ^ mul14[data[x + 1]] ^ mul11[data[x + 2]] ^ mul13[data[x + 3]];
+    	tmp[2] = mul13[data[x]] ^ mul9[data[x + 1]] ^ mul14[data[x + 2]] ^ mul11[data[x + 3]];
+    	tmp[3] = mul11[data[x]] ^ mul13[data[x + 1]] ^ mul9[data[x + 2]] ^ mul14[data[x + 3]];
+    	
+    	for(int y = 0; y < 4; y++)
+    	{
+    		data[x + y] = tmp[y];
+    	}
 	}
 }
 
 
-void add_round_key (uint32_t data[], uint32_t key_schedule[], int start)
+
+
+//XOR's the round key with the data, using the same casting trick as the key scheudle to do it in 4 cycles instead of 16
+void add_round_key (uint8_t data[], uint8_t key_schedule[], int start)
 {
-	uint32_t key_block[4];
-	rotate_key(key_block, key_schedule, start);
  	for(int x = 0 ; x < 4; x++)
  	{
- 		data[x] = key_block[x] ^ data[x];
+ 		*(uint32_t*)&data[(x * 4)] = *(uint32_t*)&key_schedule[start + (x * 4)] ^ *(uint32_t*)&data[(x * 4)];
  	}
 }
 
-uint32_t char_to_bin(char str[])
-{
-	uint32_t output = 0;
-	int shift = 31;
-	for (int x = 0; x < 32; x++)
-	{
-		output |= (str[x] - '0') << shift;
-		shift--;
-	}
-	return output;
-}
 
-void decrypt(uint32_t data[], uint32_t key[], int keysize, bool debug)
+void decrypt(uint8_t data[], uint8_t key[], int keysize)
 {
-	uint32_t key_schedule[key_schedule_size(keysize)];
-    rijndael_key_schedule(key_schedule, key, keysize);
+	uint8_t *key_schedule = rijndael_key_schedule(key, keysize);
     
     int schedule_loc;
     
@@ -468,40 +421,38 @@ void decrypt(uint32_t data[], uint32_t key[], int keysize, bool debug)
     else
     	schedule_loc = 56; 
     
-    rotate_data(data);
+    rotate_matrix(data, 0);
 
     add_round_key(data, key_schedule, schedule_loc);
     
-    if (debug == true)
-    {
-    	printf("After initial addroundkey\n");
+    
+     #ifdef DEBUG
+        printf("After initial addroundkey\n");
     	for(int x = 0; x < 4; x++)
     	{
     		printf("%08x\n",data[x]);
     	} 
-    }
+     #endif /* DEBUG */
     
     inv_shift_rows(data);
     
-    if (debug == true)
-    {
-    	printf("After initial shiftrows\n");
+     #ifdef DEBUG
+        printf("After initial inv_shift_rows\n");
     	for(int x = 0; x < 4; x++)
     	{
     		printf("%08x\n",data[x]);
     	} 
-    }
+     #endif /* DEBUG */
     
-    inv_sub_bytes(data);
+    apply_inv_s_box(data, 0);
     
-    if (debug == true)
-    {
-    	printf("After initial add subbytes\n");
+     #ifdef DEBUG
+        printf("After initial inv_sub_bytes\n");
     	for(int x = 0; x < 4; x++)
     	{
     		printf("%08x\n",data[x]);
     	} 
-    }
+     #endif /* DEBUG */
 
     int rounds;
     if (keysize == 128)
@@ -517,75 +468,70 @@ void decrypt(uint32_t data[], uint32_t key[], int keysize, bool debug)
     {
         schedule_loc -= 4;
         add_round_key(data, key_schedule, schedule_loc);
-        
-        if (debug == true)
-    	{
+    	
+    	#ifdef DEBUG
     		printf("After round %d addroundkey\n",y);
     		for(int x = 0; x < 4; x++)
     		{
     			printf("%08x\n",data[x]);
     		} 
-    	}
+     	#endif /* DEBUG */
         
         inv_mix_columns(data);
         
-        if (debug == true)
-    	{
-    		printf("After round %d mixcolumns\n",y);
+    	#ifdef DEBUG
+    		printf("After round %d inv_mix_columns\n",y);
     		for(int x = 0; x < 4; x++)
     		{
     			printf("%08x\n",data[x]);
     		} 
-    	}
+     	#endif /* DEBUG */
         
         inv_shift_rows(data);
         
-        if (debug == true)
-    	{
-    		printf("After round %d shiftrows\n",y);
+    	#ifdef DEBUG
+    		printf("After round %d inv_shift_rows\n",y);
     		for(int x = 0; x < 4; x++)
     		{
     			printf("%08x\n",data[x]);
     		} 
-    	}
+     	#endif /* DEBUG */
         
-        inv_sub_bytes(data);
+        apply_inv_s_box(data, 0);
         
         
-        if (debug == true)
-    	{
-    		printf("After round %d subbytes\n",y);
+    	#ifdef DEBUG
+    		printf("After round %d inv_sub_bytes\n",y);
     		for(int x = 0; x < 4; x++)
     		{
     			printf("%08x\n",data[x]);
     		} 
-    	}
+     	#endif /* DEBUG */
     }
 
     schedule_loc -= 4;
     add_round_key(data, key_schedule, schedule_loc);
+    rotate_matrix(data, 0);
     
-    rotate_data(data);
+    free(key_schedule);
 }
 
-void encrypt(uint32_t data[], uint32_t key[], int keysize, bool debug)
+void encrypt(uint8_t data[], uint8_t key[], int keysize, bool debug)
 {
-	uint32_t key_schedule[key_schedule_size(keysize)];
-    rijndael_key_schedule(key_schedule, key, keysize);
+	uint8_t *key_schedule = rijndael_key_schedule(key, keysize);
     int schedule_loc = 0;
 
-	rotate_data(data);
+	rotate_matrix(data, 0);
 	
     add_round_key(data, key, schedule_loc);
     
-    if (debug == true)
-    {
+    #ifdef DEBUG
     	printf("After initial add round key\n");
     	for(int x = 0; x < 4; x++)
     	{
     		printf("%08x\n",data[x]);
     	} 
-    }
+    #endif /* DEBUG */
 
     int rounds;
     if (keysize == 128)
@@ -599,103 +545,90 @@ void encrypt(uint32_t data[], uint32_t key[], int keysize, bool debug)
 
     for(int y = 0; y < rounds; y++)
     {
-    	sub_bytes(data);
+    	apply_s_box(data, 0);
     	
-    	if (debug == true)
-    	{
+ 		#ifdef DEBUG
     		printf("After round %d subbytes\n",y);
     		for(int x = 0; x < 4; x++)
     		{
     			printf("%08x\n",data[x]);
     		} 
-    	}
+    	#endif /* DEBUG */
     	
     	shift_rows(data);
     	
-    	if (debug == true)
-    	{
+		#ifdef DEBUG
     		printf("After round %d shiftrows\n",y);
     		for(int x = 0; x < 4; x++)
     		{
     			printf("%08x\n",data[x]);
     		} 
-    	}
+    	#endif /* DEBUG */
     	
     	mix_columns(data);
     	
-    	if (debug == true)
-    	{
+		#ifdef DEBUG
     		printf("After round %d mixcolumns\n",y);
     		for(int x = 0; x < 4; x++)
     		{
     			printf("%08x\n",data[x]);
     		} 
-    	}
+    	#endif /* DEBUG */
     	
     	schedule_loc += 4;
     	add_round_key(data, key_schedule, schedule_loc);
     	
-    	if (debug == true)
-    	{
+		#ifdef DEBUG
     		printf("After round %d addroundkey\n",y);
     		for(int x = 0; x < 4; x++)
     		{
     			printf("%08x\n",data[x]);
     		} 
-    	}
+    	#endif /* DEBUG */
     }
     
-    sub_bytes(data);
+    apply_s_box(data, 0);
     
-    if (debug == true)
-    {
+	#ifdef DEBUG
     	printf("After final subbytes\n");
     	for(int x = 0; x < 4; x++)
     	{
     		printf("%08x\n",data[x]);
     	} 
-    }
+	#endif /* DEBUG */
     
     shift_rows(data);
     
-    if (debug == true)
-    {
+	#ifdef DEBUG
     	printf("After final shiftrows\n");
     	for(int x = 0; x < 4; x++)
     	{
     		printf("%08x\n",data[x]);
     	} 
-    }
+    #endif /* DEBUG */
     
     schedule_loc += 4;
     add_round_key(data, key_schedule, schedule_loc);
     
-    rotate_data(data);
+    rotate_matrix(data, 0);
+    
+    
+    free(key_schedule);
 }
 
 int main()
 {
-
-	uint32_t data[4] = {0x00112233, 0x44556677, 0x8899aabb, 0xccddeeff};
-    uint32_t key[8] = {0x00010203, 0x04050607, 0x08090a0b, 0x0c0d0e0f, 0x10111213, 0x14151617, 0x18191a1b, 0x1c1d1e1f};
+	uint8_t key[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+	uint8_t *key_schedule = rijndael_key_schedule (key, 128);
+	
+	for(int x = 0; x < 176; x++)
+	{
+		if(x % 4 == 0)
+			printf("%08x ",*(uint32_t*)&key_schedule[x]);
+		if((x + 1) % 16 == 0 && x != 0)
+			printf("\n");
+	}
     
-    //uint32_t data[4] = {0x3243f6a8, 0x885a308d, 0x313198a2, 0xe0370734};
-    //uint32_t key[4] = {0x2b7e1516, 0x28aed2a6, 0xabf71588, 0x09cf4f3c
     
-    encrypt(data, key, 256, false);
-    
-    printf("The ciphertext is\n");
-    for(int x = 0; x < 4; x++)
-    {
-    	printf("%08x\n",data[x]);
-    } 
-
-    decrypt(data, key, 256, false);
-
-    printf("The plaintext is\n");
-    for(int x = 0; x < 4; x++)
-    {
-    	printf("%08x\n",data[x]);
-    } 
  
 }
