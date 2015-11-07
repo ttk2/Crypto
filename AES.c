@@ -210,19 +210,22 @@ uint32_t set_byte(uint32_t word, uint8_t byte, int loc)
 }
 
 
-//applies the s box to one 32 bit word starting at the given position
+//applies the s box to four bytes in an array of bytes
+//starting at the given index, overwrites old data
 void apply_s_box (uint8_t byte[], int start)
 {
-	for(int x = 0 ; x< 4 ; x++)
+	for(int x = 0 ; x < 4 ; x++)
 	{
 		byte[start + x] = s[byte[start + x]];
 	}
 }
 
+//the same as apply_s_box but the data is returned instead of 
+//modified in place. 
 uint32_t key_schedule_apply_s_box (uint8_t byte[], int start)
 {
-	int word[4];
-	for(int x = 0 ; x< 4 ; x++)
+	uint8_t word[4];
+	for(int x = 0 ; x < 4 ; x++)
 	{
 		word[x] = s[byte[start + x]];
 	}
@@ -281,7 +284,7 @@ uint32_t rijndael_key_schedule_core (uint32_t word, int iteration)
 }
 
 
-//Since the key schedule operates on full works we do some fancy casting to turn our bytes into full 32 bit ints. 
+//Since the key schedule operates on full words we do some fancy casting to turn our bytes into full 32 bit ints. 
 uint8_t* rijndael_key_schedule (uint8_t *encryption_key, int key_size) 
 {
 	int b; //bytes in the completed key schedule 
@@ -312,10 +315,9 @@ uint8_t* rijndael_key_schedule (uint8_t *encryption_key, int key_size)
 			
 		else if ((x % 4 == 0 && key_size == 128) || (x % 6 == 0 && key_size == 192) || (x % 8 == 0 && key_size == 256))
 		{
-			*(uint32_t*)&key_schedule[x * 4] = *(uint32_t*)&key_schedule[((x - (key_size / 32)) * 4)] ^ rijndael_key_schedule_core(*(uint32_t*)&key_schedule[x * 4], iteration);
+			*(uint32_t*)&key_schedule[x * 4] = *(uint32_t*)&key_schedule[((x - (key_size / 32)) * 4)] ^ rijndael_key_schedule_core(*(uint32_t*)&key_schedule[(x - 1) * 4], iteration);
 			iteration++;
 			counter = 0;
-
 		}
 
 		else if (counter < 3 || (counter < 5 && key_size == 192))
@@ -339,7 +341,6 @@ uint8_t* rijndael_key_schedule (uint8_t *encryption_key, int key_size)
 		//rotate_matrix(key_schedule, x);
 	//}
 	
-	printf("exiting key schedule\n");
 	return key_schedule;
 }
 
@@ -618,10 +619,11 @@ void encrypt(uint8_t data[], uint8_t key[], int keysize, bool debug)
 
 int main()
 {
-	uint8_t key[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+	uint8_t key[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+	//uint8_t key[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 	uint8_t *key_schedule = rijndael_key_schedule (key, 128);
 	
-	for(int x = 0; x < 176; x++)
+	for(int x = 0; x < 240; x++)
 	{
 		if(x % 4 == 0)
 			printf("%08x ",*(uint32_t*)&key_schedule[x]);
